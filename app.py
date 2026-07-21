@@ -220,33 +220,55 @@ def compute_consumption(events, samples, controls):
 
 
 def summarize_by_reagent(detail):
-    closed = detail[detail["vol_consumido"].notna()].copy()
-    if closed.empty:
-        return pd.DataFrame(columns=["reactivo", "n_periodos_cerrados", "vol_total_consumido",
-                                      "n_muestras_total", "n_controles_total", "n_pruebas_total",
-                                      "vol_promedio_por_prueba"])
-    summary = closed.groupby("reactivo").agg(
-        n_periodos_cerrados=("vol_consumido", "count"),
-        vol_total_consumido=("vol_consumido", "sum"),
-        n_muestras_total=("n_muestras", "sum"),
-        n_controles_total=("n_controles", "sum"),
-        n_pruebas_total=("n_pruebas_total", "sum"),
-    ).reset_index()
-    summary["vol_promedio_por_prueba"] = (
-        summary["vol_total_consumido"] / summary["n_pruebas_total"].replace(0, pd.NA)
-    )
+    """Rendimiento por caja/botella: SOLO cantidad de pruebas, sin ningún volumen."""
+    cerradas = detail[detail["fin_periodo"] != "EN USO (frasco actual)"].copy()
+    if cerradas.empty:
+        return pd.DataFrame(columns=["reactivo", "cajas_completas", "promedio_pruebas_x_caja",
+                                      "minimo", "maximo"])
+    summary = cerradas.groupby("reactivo")["n_pruebas_total"].agg(
+        cajas_completas="count",
+        promedio_pruebas_x_caja="mean",
+        minimo="min",
+        maximo="max",
+    ).round(1).reset_index()
     return summary.sort_values("reactivo").reset_index(drop=True)
+
+
+def strip_volumes(detail):
+    """Vista de detalle sin ninguna columna de volumen, solo conteo de pruebas."""
+    return detail[[
+        "reactivo", "inicio_periodo", "fin_periodo", "n_muestras", "n_controles",
+        "n_controles_lote_no_reconocido", "n_pruebas_total",
+    ]].copy()
 
 
 def to_excel_bytes(summary, detail, samples, controls, events):
     buf = io.BytesIO()
     muestras_por_panel = samples["Panel prue"].value_counts().rename_axis("Panel").reset_index(name="n_muestras")
+
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        summary.to_excel(xw, sheet_name="Resumen_Reactivos", index=False)
-        detail.to_excel(xw, sheet_name="Detalle_Periodos", index=False)
+        summary.to_excel(xw, sheet_name="Rendimiento_x_Caja", index=False)
         muestras_por_panel.to_excel(xw, sheet_name="Muestras_por_Panel", index=False)
         controls.to_excel(xw, sheet_name="Controles", index=False)
-        events.to_excel(xw, sheet_name="Cambios_Reactivos", index=False)
+        events[["reactivo", "fecha_hora"]].rename(
+            columns={"fecha_hora": "fecha_cambio"}
+        ).to_excel(xw, sheet_name="Fechas_de_Cambio", index=False)
+
+        # Una hoja POR SEPARADO para cada reactivo, solo con cantidad de pruebas
+        for reactivo in detail["reactivo"].unique():
+            sub = detail[detail["reactivo"] == reactivo].copy().reset_index(drop=True)
+            sub.insert(0, "Nº caja/cambio", range(1, len(sub) + 1))
+            sub = sub.rename(columns={
+                "inicio_periodo": "Fecha inicio caja",
+                "fin_periodo": "Fecha fin caja (o en uso)",
+                "n_muestras": "Muestras",
+                "n_controles": "Controles",
+                "n_pruebas_total": "TOTAL pruebas",
+            })[["Nº caja/cambio", "Fecha inicio caja", "Fecha fin caja (o en uso)",
+                "Muestras", "Controles", "TOTAL pruebas"]]
+            hoja = reactivo.replace(" ", "_")[:31]
+            sub.to_excel(xw, sheet_name=hoja, index=False)
+
     buf.seek(0)
     return buf
 
@@ -262,9 +284,9 @@ with st.expander("ℹ️ Cómo funciona", expanded=False):
     st.markdown("""
     1. Sube el **Log** de cambios de reactivo, el **Review** de resultados, y opcionalmente
        hasta 6 archivos **LJQC** de control (bajo/medio/alto).
-    2. Cada cambio de reactivo en el Log define el inicio de un frasco nuevo. Entre dos cambios
-       consecutivos se cuenta cuántas muestras/controles consumieron ese reactivo, y se calcula
-       el volumen consumido y el volumen promedio por prueba.
+    2. Cada cambio de reactivo en el Log define el inicio de un frasco/caja nueva. Entre dos
+       cambios consecutivos se cuenta cuántas muestras/controles se hicieron con esa caja, para
+       obtener el **rendimiento (cantidad de pruebas) por caja**.
     3. Reglas de control: lote **MB** = todos los reactivos excepto DR DILUENT/FR DYE;
        lote **ME** = DR DILUENT/FR DYE y también DS DILUENTE.
     4. Eventos de cambio duplicados a menos de 60 minutos (reconfirmación de código de barras)
@@ -299,13 +321,6 @@ if log_file and review_file:
     m2.metric("Muestras cargadas", len(samples))
     m3.metric("Corridas de control cargadas", len(controls))
 
-    st.subheader("Resumen de consumo por reactivo")
-    st.dataframe(summary, use_container_width=True)
-
-    st.subheader("Volumen promedio por prueba")
-    if not summary.empty:
-        st.bar_chart(summary.set_index("reactivo")["vol_promedio_por_prueba"])
-
     # --- avisos de calidad de datos ---
     lotes_control = controls["lote"].dropna().unique() if not controls.empty else []
     lotes_no_reconocidos = [l for l in lotes_control if not (str(l).upper().startswith("MB") or str(l).upper().startswith("ME"))]
@@ -320,31 +335,21 @@ if log_file and review_file:
                 f"registrado en el Log y no entran en ningún periodo de consumo."
             )
 
-    st.subheader("📦 Promedio de pruebas por caja/botella")
+    st.subheader("📦 Rendimiento por caja/botella (cantidad de pruebas)")
     st.caption("Calculado solo sobre cajas ya terminadas (se excluye la que sigue en uso).")
-    cerradas = detail[detail["fin_periodo"] != "EN USO (frasco actual)"]
-    if not cerradas.empty:
-        promedio_por_caja = cerradas.groupby("reactivo")["n_pruebas_total"].agg(
-            cajas_completas="count",
-            promedio_pruebas_x_caja="mean",
-            minimo="min",
-            maximo="max",
-        ).round(1).reset_index().sort_values("reactivo")
-        st.dataframe(promedio_por_caja, use_container_width=True)
+    st.dataframe(summary, use_container_width=True)
+    if not summary.empty:
+        st.bar_chart(summary.set_index("reactivo")["promedio_pruebas_x_caja"])
 
-        abiertas = detail[detail["fin_periodo"] == "EN USO (frasco actual)"][["reactivo", "n_pruebas_total"]]
-        abiertas = abiertas.rename(columns={"n_pruebas_total": "pruebas_caja_actual"})
-        comparacion = abiertas.merge(
-            promedio_por_caja[["reactivo", "promedio_pruebas_x_caja"]], on="reactivo", how="left"
-        )
-        if not comparacion.empty:
-            comparacion["%_del_promedio"] = (
-                comparacion["pruebas_caja_actual"] / comparacion["promedio_pruebas_x_caja"] * 100
-            ).round(0)
-            st.markdown("**Caja actual en uso vs. promedio histórico:**")
-            st.dataframe(comparacion, use_container_width=True)
-    else:
-        st.info("Todavía no hay ninguna caja completa en el periodo cargado para calcular un promedio.")
+    abiertas = detail[detail["fin_periodo"] == "EN USO (frasco actual)"][["reactivo", "n_pruebas_total"]]
+    abiertas = abiertas.rename(columns={"n_pruebas_total": "pruebas_caja_actual"})
+    comparacion = abiertas.merge(summary[["reactivo", "promedio_pruebas_x_caja"]], on="reactivo", how="left")
+    if not comparacion.empty:
+        comparacion["%_del_promedio"] = (
+            comparacion["pruebas_caja_actual"] / comparacion["promedio_pruebas_x_caja"] * 100
+        ).round(0)
+        st.markdown("**Caja actual en uso vs. promedio histórico:**")
+        st.dataframe(comparacion, use_container_width=True)
 
     with st.expander("Cantidad de pruebas por caja/cambio (por reactivo)"):
         reactivo_sel = st.selectbox("Reactivo", sorted(detail["reactivo"].unique()))
@@ -358,9 +363,6 @@ if log_file and review_file:
             "n_pruebas_total": "TOTAL pruebas",
         })[["Nº caja/cambio", "Fecha inicio caja", "Fecha fin caja (o en uso)", "Muestras", "Controles", "TOTAL pruebas"]]
         st.dataframe(sub, use_container_width=True)
-
-    with st.expander("Ver detalle completo por periodo (incluye volúmenes)"):
-        st.dataframe(detail, use_container_width=True)
 
     excel_bytes = to_excel_bytes(summary, detail, samples, controls, events)
     st.download_button(
