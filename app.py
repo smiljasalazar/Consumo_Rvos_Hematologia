@@ -55,7 +55,7 @@ def normalize_reagent_name(raw_name):
 
 # Reactivo -> MODOS BASE que lo consumen (no strings de panel compuesto tipo "CD+VSG")
 REAGENT_MODES = {
-    DS:  {"CD", "CBC", "CDR", "RET", "CR", "PLT-O"},
+    DS:  {"CD", "CBC", "CDR", "RET", "CR", "PLT-O","ESR"},
     LH:  {"CBC", "CD", "CDR", "CR"},
     LD:  {"CD", "CDR"},
     FD:  {"CD", "CDR"},
