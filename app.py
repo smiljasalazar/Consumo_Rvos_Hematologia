@@ -21,7 +21,7 @@ REAGENT_DISPLAY = {
     DS: "DS DILUENTE", LH: "M-6 LH LYSE", LD: "M-6 LD LYSE", FD: "M-6 FD DYE",
     LN: "M-6 LN LYSE", FN: "M-6 FN DYE", DR: "M-6 DR DILUENT", FR: "M-6 FR DYE",
     VSG: "Reactivo solución VSG",
-    LM: "M-6 LM LYSE (modo sin confirmar)", FM: "M-6 FM DYE (modo sin confirmar)",
+    LM: "M-6 LM LYSE", FM: "M-6 FM DYE",
 }
 
 def normalize_reagent_name(raw_name):
@@ -55,7 +55,7 @@ def normalize_reagent_name(raw_name):
 
 # Reactivo -> MODOS BASE que lo consumen (no strings de panel compuesto tipo "CD+VSG")
 REAGENT_MODES = {
-    DS:  {"CD", "CBC", "CDR", "RET", "CR", "PLT-O","ESR"},
+    DS:  {"CD", "CBC", "CDR", "RET", "CR", "PLT-O"},
     LH:  {"CBC", "CD", "CDR", "CR"},
     LD:  {"CD", "CDR"},
     FD:  {"CD", "CDR"},
@@ -64,8 +64,8 @@ REAGENT_MODES = {
     DR:  {"CDR", "RET", "CR", "PLT-O"},
     FR:  {"CDR", "RET", "CR", "PLT-O"},
     VSG: {"ESR"},
-    LM:  set(),
-    FM:  set(),
+    LM:  {"HMC"},
+    FM:  {"HMC"},
 }
 
 def reagent_used_by_control(reagent, lot):
@@ -83,6 +83,8 @@ PANEL_SYNONYMS = {
     "CD": "CD", "CDR": "CDR", "CBC": "CBC", "RET": "RET", "CR": "CR",
     "VSG": "ESR", "ESR": "ESR",
     "PLT-O": "PLT-O", "PLT-8X": "PLT-O",
+    "WBC-3X": "CD",
+    "HMC": "HMC",
 }
 
 def decompose_panel(panel_str):
@@ -330,10 +332,15 @@ with col1:
 with col2:
     review_file = st.file_uploader("Resultados de muestras (Review_....csv)", type="csv")
 
-ljqc_files = st.file_uploader(
-    "Archivos de control LJQC (opcional, hasta 6: bajo/medio/alto)",
-    type="csv", accept_multiple_files=True,
-)
+st.markdown("**Archivos de control LJQC (opcional, hasta 6: bajo/medio/alto)**")
+ljqc_cols = st.columns(3)
+ljqc_slots = []
+for i in range(6):
+    with ljqc_cols[i % 3]:
+        f = st.file_uploader(f"Control {i + 1}", type="csv", key=f"ljqc_{i}", label_visibility="collapsed")
+        if f is not None:
+            ljqc_slots.append(f)
+ljqc_files = ljqc_slots
 
 dedup_minutes = st.sidebar.slider("Umbral de deduplicación de cambios (minutos)", 5, 180, 60, 5)
 
